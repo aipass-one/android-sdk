@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="100"
+    android:viewportHeight="100">
+
+    <!-- Rounded rectangle background - indigo #4F46E5, rounded-xl equivalent -->
+    <path
+        android:pathData="M20,0 L80,0 C91.05,0 100,8.95 100,20 L100,80 C100,91.05 91.05,100 80,100 L20,100 C8.95,100 0,91.05 0,80 L0,20 C0,8.95 8.95,0 20,0 Z"
+        android:fillColor="#4F46E5" />
+
+    <!-- Chevron lighting overlay - white/15 with clip-path polygon(0 0, 41.4% 0, 70.7% 29.3%, 0 100%) -->
+    <path
+        android:pathData="M20,0 L41.4,0 L70.7,29.3 L0,100 L0,20 C0,8.95 8.95,0 20,0 Z"
+        android:fillColor="#FFFFFF"
+        android:fillAlpha="0.15" />
+
+    <!-- "AI" text - matching text-xl bold proportions (centered, ~50% box height) -->
+    <!-- Letter A -->
+    <path
+        android:pathData="M19,75 L29.5,75 L32.5,66 L51.5,66 L54.5,75 L65,75 L49.5,27 L34.5,27 Z M35.5,58 L42,38 L48.5,58 Z"
+        android:fillColor="#FFFFFF" />
+
+    <!-- Letter I -->
+    <path
+        android:pathData="M69,27 L81,27 L81,75 L69,75 Z"
+        android:fillColor="#FFFFFF" />
+</vector>

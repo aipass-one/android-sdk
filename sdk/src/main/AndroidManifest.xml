@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- Internet permission for OAuth2 network calls -->
+    <uses-permission android:name="android.permission.INTERNET" />
+
+    <application>
+        <!-- OAuth2 Callback Activity - handles redirect from browser -->
+        <!-- The intent filter uses ${applicationId} which is replaced at build time -->
+        <activity
+            android:name="one.aipass.ui.OAuth2CallbackActivity"
+            android:exported="true"
+            android:launchMode="singleTask"
+            android:theme="@style/Theme.AppCompat.NoActionBar">
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <!-- Dynamic scheme based on app package (lowercase for URI standard compliance) -->
+                <data
+                    android:scheme="aipass"
+                    android:host="${applicationId}"
+                    android:path="/callback" />
+            </intent-filter>
+        </activity>
+    </application>
+
+</manifest>

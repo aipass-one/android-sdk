@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="100"
+    android:viewportHeight="100">
+
+    <!-- Rounded rectangle background - indigo #4F46E5 -->
+    <path
+        android:pathData="M20,0 L80,0 C91.05,0 100,8.95 100,20 L100,80 C100,91.05 91.05,100 80,100 L20,100 C8.95,100 0,91.05 0,80 L0,20 C0,8.95 8.95,0 20,0 Z"
+        android:fillColor="#4F46E5" />
+
+    <!-- Chevron lighting overlay -->
+    <path
+        android:pathData="M20,0 L41.4,0 L70.7,29.3 L0,100 L0,20 C0,8.95 8.95,0 20,0 Z"
+        android:fillColor="#FFFFFF"
+        android:fillAlpha="0.15" />
+</vector>
