@@ -23,29 +23,25 @@ your own OAuth2 server.
 
 ## Installation
 
-### Add to your project
+### 1. Add JitPack repository
 
-Copy the `ai-pass-sdk` directory to your Android project:
-
-```
-your-project/
-├── app/
-└── ai-pass-sdk/
-```
-
-### Update settings.gradle
-
-```gradle
-include ':app'
-include ':ai-pass-sdk'
+```kotlin
+// settings.gradle.kts
+dependencyResolutionManagement {
+    repositories {
+        google()
+        mavenCentral()
+        maven { url = uri("https://jitpack.io") }
+    }
+}
 ```
 
-### Add dependency
+### 2. Add dependency
 
-```gradle
-// app/build.gradle
+```kotlin
+// app/build.gradle.kts
 dependencies {
-    implementation project(':ai-pass-sdk')
+    implementation("com.github.aipass-one:android-sdk:v1.1.0")
 }
 ```
 
@@ -435,5 +431,5 @@ Contributions are welcome! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for gui
 
 ---
 
-**Version:** 1.0.0
-**Last Updated:** November 2, 2024
+**Version:** 1.1.0
+**Last Updated:** April 6, 2026
