@@ -1,9 +1,8 @@
 # AI Pass SDK ProGuard Rules
 
-# Keep AiPassSDK public API
--keep class one.aipass.AiPassSDK {
-    public *;
-}
+# Keep AiPassSDK public API and inner sealed classes
+-keep class one.aipass.AiPassSDK { *; }
+-keep class one.aipass.AiPassSDK$* { *; }
 
 # Keep OAuth2 domain models
 -keep class one.aipass.domain.** { *; }
