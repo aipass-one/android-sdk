@@ -90,6 +90,11 @@ class OAuth2CallbackActivity : AppCompatActivity() {
         // This prevents data loss if activity is destroyed during callback processing
         lifecycleScope.launch {
             try {
+                if (!AiPassSDK.recoverInitialization(applicationContext)) {
+                    finishWithError("sdk_not_initialized", "SDK not initialized")
+                    return@launch
+                }
+
                 // Deliver callback to AiPassSDK (SDK will handle initialization check)
                 AiPassSDK.handleAuthorizationCallback(intent)
 

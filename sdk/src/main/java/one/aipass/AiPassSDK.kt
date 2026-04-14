@@ -71,6 +71,14 @@ object AiPassSDK {
 
     private const val TAG = "AiPassSDK"
     private const val DEFAULT_BASE_URL = "https://aipass.one"
+    private const val SDK_CONFIG_PREFS_NAME = "aipass_sdk_config"
+    private const val KEY_AUTHORIZATION_ENDPOINT = "authorization_endpoint"
+    private const val KEY_TOKEN_ENDPOINT = "token_endpoint"
+    private const val KEY_REVOCATION_ENDPOINT = "revocation_endpoint"
+    private const val KEY_CLIENT_ID = "client_id"
+    private const val KEY_CLIENT_SECRET = "client_secret"
+    private const val KEY_REDIRECT_URI = "redirect_uri"
+    private const val KEY_SCOPES = "scopes"
     private val DEFAULT_SCOPES = listOf("api:access", "profile:read")
 
     // Internal OAuth manager
@@ -143,15 +151,7 @@ object AiPassSDK {
             scopes = scopes
         )
 
-        // Initialize OAuth manager
-        this.manager = OAuth2Manager(context.applicationContext, config!!)
-
-        // Check current auth status
-        updateAuthState()
-
-        CoroutineScope(Dispatchers.IO).launch {
-            fetchBalanceInBackground()
-        }
+        initialize(context.applicationContext, config!!)
     }
 
     /**
@@ -954,8 +954,68 @@ object AiPassSDK {
     fun initialize(context: Context, config: OAuth2Config) {
         this.context = context.applicationContext
         this.config = config
+        persistConfig(context.applicationContext, config)
+        retrofit = null
+        apiService = null
+        audioApiService = null
         this.manager = OAuth2Manager(context.applicationContext, config)
         updateAuthState()
+        CoroutineScope(Dispatchers.IO).launch {
+            fetchBalanceInBackground()
+        }
+    }
+
+    internal fun recoverInitialization(context: Context): Boolean {
+        if (isInitialized()) {
+            return true
+        }
+
+        val prefs = context.applicationContext.getSharedPreferences(
+            SDK_CONFIG_PREFS_NAME,
+            Context.MODE_PRIVATE
+        )
+
+        val authorizationEndpoint = prefs.getString(KEY_AUTHORIZATION_ENDPOINT, null)
+        val tokenEndpoint = prefs.getString(KEY_TOKEN_ENDPOINT, null)
+        val clientId = prefs.getString(KEY_CLIENT_ID, null)
+        val redirectUri = prefs.getString(KEY_REDIRECT_URI, null)
+        val scopes = prefs.getStringSet(KEY_SCOPES, null)?.toList() ?: DEFAULT_SCOPES
+
+        if (
+            authorizationEndpoint.isNullOrBlank() ||
+            tokenEndpoint.isNullOrBlank() ||
+            clientId.isNullOrBlank() ||
+            redirectUri.isNullOrBlank()
+        ) {
+            _authState.value = AuthState.Error("SDK not initialized")
+            return false
+        }
+
+        val recoveredConfig = OAuth2Config(
+            authorizationEndpoint = authorizationEndpoint,
+            tokenEndpoint = tokenEndpoint,
+            revocationEndpoint = prefs.getString(KEY_REVOCATION_ENDPOINT, null),
+            clientId = clientId,
+            clientSecret = prefs.getString(KEY_CLIENT_SECRET, null),
+            redirectUri = redirectUri,
+            scopes = scopes
+        )
+
+        initialize(context.applicationContext, recoveredConfig)
+        return true
+    }
+
+    private fun persistConfig(context: Context, config: OAuth2Config) {
+        context.getSharedPreferences(SDK_CONFIG_PREFS_NAME, Context.MODE_PRIVATE)
+            .edit()
+            .putString(KEY_AUTHORIZATION_ENDPOINT, config.authorizationEndpoint)
+            .putString(KEY_TOKEN_ENDPOINT, config.tokenEndpoint)
+            .putString(KEY_REVOCATION_ENDPOINT, config.revocationEndpoint)
+            .putString(KEY_CLIENT_ID, config.clientId)
+            .putString(KEY_CLIENT_SECRET, config.clientSecret)
+            .putString(KEY_REDIRECT_URI, config.redirectUri)
+            .putStringSet(KEY_SCOPES, config.scopes.toSet())
+            .commit()
     }
 
     /**

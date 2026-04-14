@@ -2,8 +2,10 @@ package one.aipass.data
 
 import android.content.Context
 import android.content.SharedPreferences
+import android.util.Log
 import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
+import java.security.KeyStore
 
 /**
  * Secure storage for OAuth2 tokens
@@ -16,17 +18,51 @@ class OAuth2TokenStorage(context: Context) {
     private val sharedPreferences: SharedPreferences
 
     init {
+        sharedPreferences = createSharedPreferences(context.applicationContext)
+    }
+
+    private fun createSharedPreferences(context: Context): SharedPreferences {
+        return try {
+            createEncryptedSharedPreferences(context)
+        } catch (initializationError: Exception) {
+            Log.w(TAG, "Failed to initialize encrypted OAuth storage, clearing local state and retrying", initializationError)
+            clearCorruptedStorage(context)
+
+            try {
+                createEncryptedSharedPreferences(context)
+            } catch (retryError: Exception) {
+                Log.e(TAG, "Falling back to plain SharedPreferences for OAuth storage", retryError)
+                context.getSharedPreferences(FALLBACK_PREFS_NAME, Context.MODE_PRIVATE)
+            }
+        }
+    }
+
+    private fun createEncryptedSharedPreferences(context: Context): SharedPreferences {
         val masterKey = MasterKey.Builder(context)
             .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
             .build()
 
-        sharedPreferences = EncryptedSharedPreferences.create(
+        return EncryptedSharedPreferences.create(
             context,
             PREFS_NAME,
             masterKey,
             EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
             EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
         )
+    }
+
+    private fun clearCorruptedStorage(context: Context) {
+        context.deleteSharedPreferences(PREFS_NAME)
+        context.deleteSharedPreferences(FALLBACK_PREFS_NAME)
+
+        try {
+            val keyStore = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
+            if (keyStore.containsAlias(MasterKey.DEFAULT_MASTER_KEY_ALIAS)) {
+                keyStore.deleteEntry(MasterKey.DEFAULT_MASTER_KEY_ALIAS)
+            }
+        } catch (keyStoreError: Exception) {
+            Log.w(TAG, "Failed to clear Android Keystore entry during OAuth storage recovery", keyStoreError)
+        }
     }
 
     /**
@@ -171,7 +207,9 @@ class OAuth2TokenStorage(context: Context) {
     }
 
     companion object {
+        private const val TAG = "OAuth2TokenStorage"
         private const val PREFS_NAME = "aipass_oauth2_prefs"
+        private const val FALLBACK_PREFS_NAME = "aipass_oauth2_prefs_fallback"
         private const val KEY_ACCESS_TOKEN = "oauth2_access_token"
         private const val KEY_REFRESH_TOKEN = "oauth2_refresh_token"
         private const val KEY_TOKEN_EXPIRY = "oauth2_token_expiry"
