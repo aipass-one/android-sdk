@@ -5,6 +5,44 @@ All notable changes to AI Pass SDK will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.0] - 2026-04-18
+
+### Added
+
+- **Automatic token management via OkHttp.** The SDK now installs an
+  `AuthorizationInterceptor` that injects `Authorization: Bearer <token>` on
+  every request, and a `TokenAuthenticator` that refreshes the token on 401
+  responses and retries the original request transparently. Callers no longer
+  need to manage tokens or write retry loops.
+- `OAuth2Manager.refreshAccessTokenIfNeeded()` — fast-path refresh that only
+  hits the network when the stored token is actually expired.
+
+### Changed
+
+- `AiPassSDK.initialize()` is now **idempotent** — repeat calls with the same
+  config are no-ops. Safe to call on every cold start without paying for a
+  fresh manager + background balance fetch each time.
+- `OAuth2Manager.refreshAccessToken()` is now serialized by a `Mutex` so
+  concurrent callers share a single refresh attempt (no more refresh
+  stampede on burst 401s).
+- `AiPassCompletionApiService` and `AiPassAudioApiService` no longer declare
+  `@Header("Authorization")` parameters. The interceptor adds the header
+  automatically. **Minor breaking change** for callers of the raw Retrofit
+  services; the high-level `AiPassSDK.generateCompletion` / `transcribeAudio`
+  / `getUserBalance` / `generateSpeech` / `generateImage` signatures are
+  unchanged.
+- API methods no longer contain manual 401-retry loops — the authenticator
+  handles it. A 401 reaching the caller now means refresh itself failed,
+  which is surfaced as `ApiResult.Unauthenticated`.
+
+### Removed
+
+- `AiPassSDK.getValidToken()` and `attemptTokenRefresh()` private helpers —
+  replaced by the authenticator.
+- Internal `retry*` helpers (`retryCompletion`, `retryBalanceFetch`,
+  `retrySpeechGeneration`, `retryAudioTranscription`, `retryImageGeneration`)
+  — no longer needed.
+
 ## [1.0.0] - 2024-11-02
 
 ### Added
@@ -75,5 +113,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Version History
 
+- **1.2.0** (2026-04-18): Automatic token refresh via OkHttp authenticator, idempotent init, mutex-serialized refresh
 - **1.1.0** (2025-11-02): Audio API support (TTS & STT) + Java 21 target
 - **1.0.0** (2024-11-02): Initial public release with full OAuth2 + PKCE support

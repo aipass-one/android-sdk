@@ -6,13 +6,15 @@ import okhttp3.RequestBody
 import okhttp3.ResponseBody
 import retrofit2.Response
 import retrofit2.http.Body
-import retrofit2.http.Header
 import retrofit2.http.Multipart
 import retrofit2.http.POST
 import retrofit2.http.Part
 
 /**
- * Retrofit interface for AI Pass audio endpoints (TTS and STT)
+ * Retrofit interface for AI Pass audio endpoints (TTS and STT).
+ *
+ * Authorization is injected automatically by [AuthorizationInterceptor] and
+ * refreshed on 401 by [TokenAuthenticator] — callers don't pass tokens.
  *
  * Supports:
  * - Text-to-Speech (TTS): Convert text to audio
@@ -24,27 +26,20 @@ interface AiPassAudioApiService {
      * Generate speech audio from text (Text-to-Speech)
      * POST /oauth2/v1/audio/speech
      *
-     * @param authorization Bearer token
      * @param request Text-to-speech request
      * @return Audio file as ResponseBody (binary data)
      */
     @POST("oauth2/v1/audio/speech")
     suspend fun generateSpeech(
-        @Header("Authorization") authorization: String,
         @Body request: AudioSpeechRequest
     ): Response<ResponseBody>
 
     /**
      * Generate speech audio from text (Text-to-Speech) - Alternative endpoint
      * POST /oauth2/v1/audio/speech
-     *
-     * @param authorization Bearer token
-     * @param request Text-to-speech request
-     * @return Audio file as ResponseBody (binary data)
      */
     @POST("oauth2/v1/audio/speech")
     suspend fun generateSpeechV1(
-        @Header("Authorization") authorization: String,
         @Body request: AudioSpeechRequest
     ): Response<ResponseBody>
 
@@ -52,7 +47,6 @@ interface AiPassAudioApiService {
      * Transcribe audio to text (Speech-to-Text)
      * POST /oauth2/v1/audio/transcriptions
      *
-     * @param authorization Bearer token
      * @param file Audio file as multipart
      * @param model Model ID (e.g., "whisper-1")
      * @param language Optional language code (ISO 639-1, e.g., "en", "es")
@@ -64,7 +58,6 @@ interface AiPassAudioApiService {
     @Multipart
     @POST("oauth2/v1/audio/transcriptions")
     suspend fun transcribeAudio(
-        @Header("Authorization") authorization: String,
         @Part file: MultipartBody.Part,
         @Part("model") model: RequestBody,
         @Part("language") language: RequestBody? = null,
@@ -76,20 +69,10 @@ interface AiPassAudioApiService {
     /**
      * Transcribe audio to text (Speech-to-Text) - Alternative endpoint
      * POST /oauth2/v1/audio/transcriptions
-     *
-     * @param authorization Bearer token
-     * @param file Audio file as multipart
-     * @param model Model ID (e.g., "whisper-1")
-     * @param language Optional language code (ISO 639-1, e.g., "en", "es")
-     * @param prompt Optional context/prompt to guide transcription
-     * @param temperature Optional sampling temperature (0-1)
-     * @param responseFormat Optional response format ("json", "text", "srt", "vtt")
-     * @return Transcription response
      */
     @Multipart
     @POST("oauth2/v1/audio/transcriptions")
     suspend fun transcribeAudioV1(
-        @Header("Authorization") authorization: String,
         @Part file: MultipartBody.Part,
         @Part("model") model: RequestBody,
         @Part("language") language: RequestBody? = null,

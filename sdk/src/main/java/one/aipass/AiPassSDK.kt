@@ -18,9 +18,12 @@ import okhttp3.RequestBody.Companion.toRequestBody
 import one.aipass.data.AiPassAudioApiService
 import one.aipass.data.AiPassCompletionApiService
 import one.aipass.data.AudioSpeechRequest
+import one.aipass.data.AuthorizationInterceptor
 import one.aipass.data.CompletionRequest
 import one.aipass.data.ImageGenerationRequest
 import one.aipass.data.Message
+import one.aipass.data.OAuth2TokenStorage
+import one.aipass.data.TokenAuthenticator
 import one.aipass.data.UsageBalanceData
 import one.aipass.domain.OAuth2Config
 import one.aipass.domain.OAuth2Manager
@@ -35,17 +38,19 @@ import java.util.concurrent.TimeUnit
  * AI Pass SDK - Simple OAuth2 + AI API Client
  *
  * Dead-simple API for OAuth2 authentication and AI completions.
- * Everything is handled automatically - tokens, refresh, errors, etc.
+ * Authentication, token refresh, and retries are handled automatically by
+ * OkHttp interceptors inside the SDK — callers never touch Bearer tokens.
  *
  * Usage:
  * ```
- * // 1. Initialize (in Application.onCreate)
+ * // 1. Initialize (safe to call repeatedly; subsequent calls with the same
+ * //    config are no-ops)
  * AiPassSDK.initialize(
  *     context = this,
  *     clientId = "your_client_id"
  * )
  *
- * // 2. Observe auth state (in ViewModel/Activity)
+ * // 2. Observe auth state
  * AiPassSDK.authState.collect { state ->
  *     when (state) {
  *         AuthState.Authenticated -> // User logged in
@@ -57,7 +62,7 @@ import java.util.concurrent.TimeUnit
  * // 3. Start login
  * AiPassSDK.login(activity)
  *
- * // 4. Make API calls (that's it!)
+ * // 4. Make API calls
  * val result = AiPassSDK.generateCompletion(
  *     model = "gpt-4o-mini",
  *     prompt = "Hello, how are you?"
@@ -85,6 +90,7 @@ object AiPassSDK {
     private var manager: OAuth2Manager? = null
     private var config: OAuth2Config? = null
     private var context: Context? = null
+    private var tokenStorage: OAuth2TokenStorage? = null
     private var apiService: AiPassCompletionApiService? = null
     private var audioApiService: AiPassAudioApiService? = null
     private var retrofit: Retrofit? = null
@@ -119,7 +125,11 @@ object AiPassSDK {
     }
 
     /**
-     * Initialize SDK with minimal configuration
+     * Initialize SDK with minimal configuration.
+     *
+     * Safe to call repeatedly — subsequent calls with the same config are
+     * effectively no-ops. Call this once in `Application.onCreate` (or
+     * wherever your DI graph is built) and let the SDK handle the rest.
      *
      * @param context Application context
      * @param clientId Your OAuth2 client ID
@@ -137,21 +147,17 @@ object AiPassSDK {
             throw IllegalArgumentException("Client ID cannot be blank")
         }
 
-        this.context = context.applicationContext
-
         // Auto-generate redirect URI from package name
-        val packageName = context.packageName
-        val redirectUri = "aipass://$packageName/callback"
+        val redirectUri = "aipass://${context.packageName}/callback"
 
-        // Create config with sensible defaults
-        this.config = OAuth2Config.forAiKey(
+        val newConfig = OAuth2Config.forAiKey(
             baseUrl = baseUrl,
             clientId = clientId,
             redirectUri = redirectUri,
             scopes = scopes
         )
 
-        initialize(context.applicationContext, config!!)
+        initialize(context.applicationContext, newConfig)
     }
 
     /**
@@ -186,41 +192,40 @@ object AiPassSDK {
     }
 
     /**
-     * Get user's usage balance and budget
-     * Automatically handles authentication and token refresh
+     * Get user's usage balance and budget.
+     *
+     * Authentication and token refresh are handled transparently by the SDK's
+     * OkHttp authenticator — you just call this and get the result.
      *
      * @return API result with balance data or error
      */
     suspend fun getUserBalance(): ApiResult<UsageBalanceData> = withContext(Dispatchers.IO) {
         try {
-            ensureApiService() ?: return@withContext ApiResult.Error("SDK not initialized")
+            val service = ensureApiService()
+                ?: return@withContext ApiResult.Error("SDK not initialized")
 
-            val token = getValidToken()
-                ?: return@withContext ApiResult.Unauthenticated
+            if (!isAuthenticated()) {
+                return@withContext ApiResult.Unauthenticated
+            }
 
-            val response = apiService!!.getUserBalance(
-                authorization = "Bearer $token"
-            )
+            val response = service.getUserBalance()
 
-            if (response.isSuccessful) {
-                val balanceResponse = response.body()
-                if (balanceResponse?.success == true && balanceResponse.data != null) {
-                    ApiResult.Success(balanceResponse.data)
-                } else {
-                    ApiResult.Error("Empty or invalid balance response")
-                }
-            } else {
-                if (response.code() == 401) {
-                    val refreshed = attemptTokenRefresh()
-                    if (refreshed) {
-                        return@withContext retryBalanceFetch()
+            when {
+                response.isSuccessful -> {
+                    val balanceResponse = response.body()
+                    if (balanceResponse?.success == true && balanceResponse.data != null) {
+                        ApiResult.Success(balanceResponse.data)
                     } else {
-                        _authState.value = AuthState.Unauthenticated
-                        ApiResult.Unauthenticated
+                        ApiResult.Error("Empty or invalid balance response")
                     }
-                } else {
-                    ApiResult.Error("API error: ${response.code()} ${response.message()}")
                 }
+                response.code() == 401 -> {
+                    // Authenticator already tried to refresh; if we still see 401
+                    // the refresh failed (or user was logged out).
+                    _authState.value = AuthState.Unauthenticated
+                    ApiResult.Unauthenticated
+                }
+                else -> ApiResult.Error("API error: ${response.code()} ${response.message()}")
             }
         } catch (e: Exception) {
             ApiResult.Error("Balance API call failed: ${e.message}", e)
@@ -228,8 +233,10 @@ object AiPassSDK {
     }
 
     /**
-     * Generate AI completion
-     * Automatically handles authentication, token refresh, and errors
+     * Generate AI completion.
+     *
+     * Authentication and token refresh are handled transparently by the SDK's
+     * OkHttp authenticator.
      *
      * @param model Model name (e.g., "gpt-4o-mini", "gpt-4o")
      * @param prompt User prompt
@@ -244,44 +251,36 @@ object AiPassSDK {
         maxTokens: Int = 1000
     ): ApiResult<String> = withContext(Dispatchers.IO) {
         try {
-            ensureApiService() ?: return@withContext ApiResult.Error("SDK not initialized")
+            val service = ensureApiService()
+                ?: return@withContext ApiResult.Error("SDK not initialized")
 
-            val token = getValidToken()
-                ?: return@withContext ApiResult.Unauthenticated
+            if (!isAuthenticated()) {
+                return@withContext ApiResult.Unauthenticated
+            }
 
             val request = CompletionRequest(
                 model = model,
-                messages = listOf(
-                    Message(role = "user", content = prompt)
-                ),
+                messages = listOf(Message(role = "user", content = prompt)),
                 temperature = temperature,
                 maxTokens = maxTokens
             )
 
-            val response = apiService!!.generateCompletion(
-                authorization = "Bearer $token",
-                request = request
-            )
+            val response = service.generateCompletion(request)
 
-            if (response.isSuccessful) {
-                val completion = response.body()?.choices?.firstOrNull()?.message?.content
-                if (completion != null) {
-                    ApiResult.Success(completion as String)
-                } else {
-                    ApiResult.Error("Empty response from API")
-                }
-            } else {
-                if (response.code() == 401) {
-                    val refreshed = attemptTokenRefresh()
-                    if (refreshed) {
-                        return@withContext retryCompletion(model, prompt, temperature, maxTokens)
+            when {
+                response.isSuccessful -> {
+                    val completion = response.body()?.choices?.firstOrNull()?.message?.content
+                    if (completion != null) {
+                        ApiResult.Success(completion as String)
                     } else {
-                        _authState.value = AuthState.Unauthenticated
-                        ApiResult.Unauthenticated
+                        ApiResult.Error("Empty response from API")
                     }
-                } else {
-                    ApiResult.Error("API error: ${response.code()} ${response.message()}")
                 }
+                response.code() == 401 -> {
+                    _authState.value = AuthState.Unauthenticated
+                    ApiResult.Unauthenticated
+                }
+                else -> ApiResult.Error("API error: ${response.code()} ${response.message()}")
             }
         } catch (e: Exception) {
             ApiResult.Error("API call failed: ${e.message}", e)
@@ -289,9 +288,7 @@ object AiPassSDK {
     }
 
     /**
-     * Generate speech audio from text (Text-to-Speech)
-     * Automatically handles authentication, token refresh, and errors
-     * Works with any LiteLLM-supported TTS provider (OpenAI, Azure, Gemini, etc.)
+     * Generate speech audio from text (Text-to-Speech).
      *
      * @param text The text to convert to speech
      * @param model Model name in LiteLLM format (e.g., "tts-1", "azure/tts-hd")
@@ -309,16 +306,13 @@ object AiPassSDK {
     ): ApiResult<String> = withContext(Dispatchers.IO) {
         try {
             val ctx = context ?: return@withContext ApiResult.Error("SDK not initialized")
-
-            // Ensure audio service is created
             val audioService = createAudioApiService()
                 ?: return@withContext ApiResult.Error("SDK not initialized")
 
-            // Get or refresh token
-            val token = getValidToken()
-                ?: return@withContext ApiResult.Unauthenticated
+            if (!isAuthenticated()) {
+                return@withContext ApiResult.Unauthenticated
+            }
 
-            // Create request
             val request = AudioSpeechRequest(
                 model = model,
                 input = text.trim(),
@@ -327,49 +321,32 @@ object AiPassSDK {
                 speed = speed
             )
 
-            // Make API call
-            val response = audioService.generateSpeech(
-                authorization = "Bearer $token",
-                request = request
-            )
+            val response = audioService.generateSpeech(request)
 
-            // Handle response
-            if (response.isSuccessful) {
-                val audioBytes = response.body()?.bytes()
-                if (audioBytes != null && audioBytes.isNotEmpty()) {
-                    // Save to temp file in cache directory
-                    val extension = when (responseFormat.lowercase()) {
-                        "mp3" -> "mp3"
-                        "opus" -> "opus"
-                        "aac" -> "aac"
-                        "flac" -> "flac"
-                        "wav" -> "wav"
-                        "pcm" -> "pcm"
-                        else -> "mp3"
-                    }
-                    val tempFile = File.createTempFile("tts_", ".$extension", ctx.cacheDir)
-                    tempFile.outputStream().use { it.write(audioBytes) }
-
-                    ApiResult.Success(tempFile.absolutePath)
-                } else {
-                    ApiResult.Error("Empty audio response from API")
-                }
-            } else {
-                if (response.code() == 401) {
-                    val refreshed = attemptTokenRefresh()
-                    if (refreshed) {
-                        return@withContext retrySpeechGeneration(
-                            text,
-                            model,
-                            voice,
-                            responseFormat,
-                            speed
-                        )
+            when {
+                response.isSuccessful -> {
+                    val audioBytes = response.body()?.bytes()
+                    if (audioBytes != null && audioBytes.isNotEmpty()) {
+                        val extension = when (responseFormat.lowercase()) {
+                            "opus" -> "opus"
+                            "aac" -> "aac"
+                            "flac" -> "flac"
+                            "wav" -> "wav"
+                            "pcm" -> "pcm"
+                            else -> "mp3"
+                        }
+                        val tempFile = File.createTempFile("tts_", ".$extension", ctx.cacheDir)
+                        tempFile.outputStream().use { it.write(audioBytes) }
+                        ApiResult.Success(tempFile.absolutePath)
                     } else {
-                        _authState.value = AuthState.Unauthenticated
-                        ApiResult.Unauthenticated
+                        ApiResult.Error("Empty audio response from API")
                     }
-                } else {
+                }
+                response.code() == 401 -> {
+                    _authState.value = AuthState.Unauthenticated
+                    ApiResult.Unauthenticated
+                }
+                else -> {
                     val errorBody = response.errorBody()?.string() ?: response.message()
                     ApiResult.Error("TTS API error: ${response.code()} - $errorBody")
                 }
@@ -380,15 +357,13 @@ object AiPassSDK {
     }
 
     /**
-     * Transcribe audio to text (Speech-to-Text)
-     * Automatically handles authentication, token refresh, and errors
-     * Works with any LiteLLM-supported STT provider (OpenAI Whisper, Groq, Azure, Deepgram, etc.)
+     * Transcribe audio to text (Speech-to-Text).
      *
      * @param audioFile Audio file to transcribe
      * @param model Model name in LiteLLM format (e.g., "whisper-1", "groq/whisper-large-v3")
      * @param language Optional language code (ISO 639-1, e.g., "en", "es", "fr")
      * @param prompt Optional context/prompt to guide transcription
-     * @param temperature Optional sampling temperature (0-1), defaults to 0 for deterministic output
+     * @param temperature Optional sampling temperature (0-1)
      * @return ApiResult with transcribed text or error
      */
     suspend fun transcribeAudio(
@@ -403,19 +378,16 @@ object AiPassSDK {
                 return@withContext ApiResult.Error("Audio file does not exist: ${audioFile.path}")
             }
 
-            // Ensure audio service is created
             val audioService = createAudioApiService()
                 ?: return@withContext ApiResult.Error("SDK not initialized")
 
-            // Get or refresh token
-            val token = getValidToken()
-                ?: return@withContext ApiResult.Unauthenticated
+            if (!isAuthenticated()) {
+                return@withContext ApiResult.Unauthenticated
+            }
 
-            // Prepare multipart file
             val requestFile = audioFile.asRequestBody("audio/*".toMediaTypeOrNull())
             val filePart = MultipartBody.Part.createFormData("file", audioFile.name, requestFile)
 
-            // Prepare form fields
             val modelPart = model.toRequestBody("text/plain".toMediaTypeOrNull())
             val languagePart = language?.toRequestBody("text/plain".toMediaTypeOrNull())
             val promptPart = prompt?.toRequestBody("text/plain".toMediaTypeOrNull())
@@ -423,9 +395,7 @@ object AiPassSDK {
                 temperature.toString().toRequestBody("text/plain".toMediaTypeOrNull())
             val responseFormatPart = "json".toRequestBody("text/plain".toMediaTypeOrNull())
 
-            // Make API call
             val response = audioService.transcribeAudio(
-                authorization = "Bearer $token",
                 file = filePart,
                 model = modelPart,
                 language = languagePart,
@@ -434,30 +404,20 @@ object AiPassSDK {
                 responseFormat = responseFormatPart
             )
 
-            // Handle response
-            if (response.isSuccessful) {
-                val transcription = response.body()
-                if (transcription != null && transcription.text.isNotBlank()) {
-                    ApiResult.Success(transcription.text)
-                } else {
-                    ApiResult.Error("Empty transcription response from API")
-                }
-            } else {
-                if (response.code() == 401) {
-                    val refreshed = attemptTokenRefresh()
-                    if (refreshed) {
-                        return@withContext retryAudioTranscription(
-                            audioFile,
-                            model,
-                            language,
-                            prompt,
-                            temperature
-                        )
+            when {
+                response.isSuccessful -> {
+                    val transcription = response.body()
+                    if (transcription != null && transcription.text.isNotBlank()) {
+                        ApiResult.Success(transcription.text)
                     } else {
-                        _authState.value = AuthState.Unauthenticated
-                        ApiResult.Unauthenticated
+                        ApiResult.Error("Empty transcription response from API")
                     }
-                } else {
+                }
+                response.code() == 401 -> {
+                    _authState.value = AuthState.Unauthenticated
+                    ApiResult.Unauthenticated
+                }
+                else -> {
                     val errorBody = response.errorBody()?.string() ?: response.message()
                     ApiResult.Error("STT API error: ${response.code()} - $errorBody")
                 }
@@ -468,9 +428,7 @@ object AiPassSDK {
     }
 
     /**
-     * Generate an image from a text prompt
-     * Automatically handles authentication, token refresh, and errors
-     * Uses OpenAI-compatible /v1/images/generations endpoint via LiteLLM proxy
+     * Generate an image from a text prompt.
      *
      * @param prompt Text description of the image to generate
      * @param model Model name (e.g., "gpt-image-1", "dall-e-3")
@@ -487,10 +445,12 @@ object AiPassSDK {
         responseFormat: String = "b64_json"
     ): ApiResult<String> = withContext(Dispatchers.IO) {
         try {
-            ensureApiService() ?: return@withContext ApiResult.Error("SDK not initialized")
+            val service = ensureApiService()
+                ?: return@withContext ApiResult.Error("SDK not initialized")
 
-            val token = getValidToken()
-                ?: return@withContext ApiResult.Unauthenticated
+            if (!isAuthenticated()) {
+                return@withContext ApiResult.Unauthenticated
+            }
 
             val request = ImageGenerationRequest(
                 model = model,
@@ -501,82 +461,30 @@ object AiPassSDK {
                 responseFormat = responseFormat
             )
 
-            val response = apiService!!.generateImage(
-                authorization = "Bearer $token",
-                request = request
-            )
+            val response = service.generateImage(request)
 
-            if (response.isSuccessful) {
-                val imageResponse = response.body()
-                val imageData = imageResponse?.data?.firstOrNull()
-                when {
-                    responseFormat == "b64_json" && imageData?.b64Json != null -> {
-                        ApiResult.Success(imageData.b64Json)
-                    }
-                    imageData?.url != null -> {
-                        ApiResult.Success(imageData.url)
-                    }
-                    else -> {
-                        ApiResult.Error("Empty image response from API")
+            when {
+                response.isSuccessful -> {
+                    val imageData = response.body()?.data?.firstOrNull()
+                    when {
+                        responseFormat == "b64_json" && imageData?.b64Json != null ->
+                            ApiResult.Success(imageData.b64Json)
+                        imageData?.url != null ->
+                            ApiResult.Success(imageData.url)
+                        else -> ApiResult.Error("Empty image response from API")
                     }
                 }
-            } else {
-                if (response.code() == 401) {
-                    val refreshed = attemptTokenRefresh()
-                    if (refreshed) {
-                        return@withContext retryImageGeneration(prompt, model, size, quality, responseFormat)
-                    } else {
-                        _authState.value = AuthState.Unauthenticated
-                        ApiResult.Unauthenticated
-                    }
-                } else {
+                response.code() == 401 -> {
+                    _authState.value = AuthState.Unauthenticated
+                    ApiResult.Unauthenticated
+                }
+                else -> {
                     val errorBody = response.errorBody()?.string() ?: response.message()
                     ApiResult.Error("Image API error: ${response.code()} - $errorBody")
                 }
             }
         } catch (e: Exception) {
             ApiResult.Error("Image API call failed: ${e.message}", e)
-        }
-    }
-
-    private suspend fun retryImageGeneration(
-        prompt: String,
-        model: String,
-        size: String,
-        quality: String,
-        responseFormat: String
-    ): ApiResult<String> {
-        val token = manager?.getAccessToken() ?: return ApiResult.Unauthenticated
-
-        val request = ImageGenerationRequest(
-            model = model,
-            prompt = prompt,
-            n = 1,
-            size = size,
-            quality = quality,
-            responseFormat = responseFormat
-        )
-
-        val response = apiService!!.generateImage(
-            authorization = "Bearer $token",
-            request = request
-        )
-
-        return if (response.isSuccessful) {
-            val imageData = response.body()?.data?.firstOrNull()
-            when {
-                responseFormat == "b64_json" && imageData?.b64Json != null -> {
-                    ApiResult.Success(imageData.b64Json)
-                }
-                imageData?.url != null -> {
-                    ApiResult.Success(imageData.url)
-                }
-                else -> {
-                    ApiResult.Error("Empty image response from API")
-                }
-            }
-        } else {
-            ApiResult.Error("Image API error: ${response.code()}")
         }
     }
 
@@ -589,9 +497,7 @@ object AiPassSDK {
         val result = mgr.logout()
         val success = result is OAuth2RevocationResult.Success
 
-        // Update auth state
         _authState.value = AuthState.Unauthenticated
-
         success
     }
 
@@ -603,10 +509,7 @@ object AiPassSDK {
         val mgr = manager ?: return@withContext OAuth2RevocationResult.Error("SDK not initialized")
 
         val result = mgr.logout()
-
-        // Update auth state
         _authState.value = AuthState.Unauthenticated
-
         result
     }
 
@@ -624,7 +527,6 @@ object AiPassSDK {
      * @param activity Current activity to launch browser from
      */
     fun openDashboard(activity: Activity) {
-        // Extract base URL from token endpoint
         val baseUrl = config?.tokenEndpoint?.substringBefore("/oauth2") ?: DEFAULT_BASE_URL
         val dashboardUrl = "$baseUrl/panel/dashboard.html"
         val intent = Intent(Intent.ACTION_VIEW, android.net.Uri.parse(dashboardUrl))
@@ -660,198 +562,12 @@ object AiPassSDK {
 
     private fun handleOAuthResult(result: OAuth2Result) {
         _authState.value = when (result) {
-            is OAuth2Result.Success -> {
-                AuthState.Authenticated
-            }
-
+            is OAuth2Result.Success -> AuthState.Authenticated
             is OAuth2Result.Error -> {
                 val message = result.errorDescription ?: result.error
                 AuthState.Error(message, result.exception)
             }
-
-            OAuth2Result.Cancelled -> {
-                AuthState.Unauthenticated
-            }
-        }
-    }
-
-    private suspend fun getValidToken(): String? {
-        val mgr = manager ?: return null
-
-        // Check if we have a valid token
-        var token = mgr.getAccessToken()
-        if (token != null) {
-            return token
-        }
-
-        val refreshed = attemptTokenRefresh()
-        return if (refreshed) {
-            mgr.getAccessToken()
-        } else {
-            null
-        }
-    }
-
-    private suspend fun attemptTokenRefresh(): Boolean {
-        val mgr = manager ?: return false
-
-        return when (val result = mgr.refreshAccessToken()) {
-            is OAuth2Result.Success -> {
-                _authState.value = AuthState.Authenticated
-                true
-            }
-
-            else -> {
-                _authState.value = AuthState.Unauthenticated
-                false
-            }
-        }
-    }
-
-    private suspend fun retryBalanceFetch(): ApiResult<UsageBalanceData> {
-        val token = manager?.getAccessToken()
-            ?: return ApiResult.Unauthenticated
-
-        val response = apiService!!.getUserBalance(
-            authorization = "Bearer $token"
-        )
-
-        return if (response.isSuccessful) {
-            val balanceResponse = response.body()
-            if (balanceResponse?.success == true && balanceResponse.data != null) {
-                ApiResult.Success(balanceResponse.data)
-            } else {
-                ApiResult.Error("Empty or invalid balance response")
-            }
-        } else {
-            ApiResult.Error("API error: ${response.code()}")
-        }
-    }
-
-    private suspend fun retryCompletion(
-        model: String,
-        prompt: String,
-        temperature: Double,
-        maxTokens: Int
-    ): ApiResult<String> {
-        val token = manager?.getAccessToken()
-            ?: return ApiResult.Unauthenticated
-
-        val request = CompletionRequest(
-            model = model,
-            messages = listOf(
-                Message(role = "user", content = prompt)
-            ),
-            temperature = temperature,
-            maxTokens = maxTokens
-        )
-
-        val response = apiService!!.generateCompletion(
-            authorization = "Bearer $token",
-            request = request
-        )
-
-        return if (response.isSuccessful) {
-            val completion = response.body()?.choices?.firstOrNull()?.message?.content
-            if (completion != null) {
-                ApiResult.Success(completion as String)
-            } else {
-                ApiResult.Error("Empty response from API")
-            }
-        } else {
-            ApiResult.Error("API error: ${response.code()}")
-        }
-    }
-
-    private suspend fun retrySpeechGeneration(
-        text: String,
-        model: String,
-        voice: String,
-        responseFormat: String,
-        speed: Double
-    ): ApiResult<String> {
-        val ctx = context ?: return ApiResult.Error("SDK not initialized")
-        val token = manager?.getAccessToken() ?: return ApiResult.Unauthenticated
-        val audioService =
-            audioApiService ?: return ApiResult.Error("Audio service not initialized")
-
-        val request = AudioSpeechRequest(
-            model = model,
-            input = text.trim(),
-            voice = voice,
-            responseFormat = responseFormat,
-            speed = speed
-        )
-
-        val response = audioService.generateSpeech(
-            authorization = "Bearer $token",
-            request = request
-        )
-
-        return if (response.isSuccessful) {
-            val audioBytes = response.body()?.bytes()
-            if (audioBytes != null && audioBytes.isNotEmpty()) {
-                val extension = when (responseFormat.lowercase()) {
-                    "mp3" -> "mp3"
-                    "opus" -> "opus"
-                    "aac" -> "aac"
-                    "flac" -> "flac"
-                    "wav" -> "wav"
-                    "pcm" -> "pcm"
-                    else -> "mp3"
-                }
-                val tempFile = File.createTempFile("tts_", ".$extension", ctx.cacheDir)
-                tempFile.outputStream().use { it.write(audioBytes) }
-                ApiResult.Success(tempFile.absolutePath)
-            } else {
-                ApiResult.Error("Empty audio response from API")
-            }
-        } else {
-            ApiResult.Error("TTS API error: ${response.code()}")
-        }
-    }
-
-    private suspend fun retryAudioTranscription(
-        audioFile: File,
-        model: String,
-        language: String?,
-        prompt: String?,
-        temperature: Double
-    ): ApiResult<String> {
-        val token = manager?.getAccessToken() ?: return ApiResult.Unauthenticated
-        val audioService =
-            audioApiService ?: return ApiResult.Error("Audio service not initialized")
-
-        // Prepare multipart file
-        val requestFile = audioFile.asRequestBody("audio/*".toMediaTypeOrNull())
-        val filePart = MultipartBody.Part.createFormData("file", audioFile.name, requestFile)
-
-        // Prepare form fields
-        val modelPart = model.toRequestBody("text/plain".toMediaTypeOrNull())
-        val languagePart = language?.toRequestBody("text/plain".toMediaTypeOrNull())
-        val promptPart = prompt?.toRequestBody("text/plain".toMediaTypeOrNull())
-        val temperaturePart = temperature.toString().toRequestBody("text/plain".toMediaTypeOrNull())
-        val responseFormatPart = "json".toRequestBody("text/plain".toMediaTypeOrNull())
-
-        val response = audioService.transcribeAudio(
-            authorization = "Bearer $token",
-            file = filePart,
-            model = modelPart,
-            language = languagePart,
-            prompt = promptPart,
-            temperature = temperaturePart,
-            responseFormat = responseFormatPart
-        )
-
-        return if (response.isSuccessful) {
-            val transcription = response.body()
-            if (transcription != null && transcription.text.isNotBlank()) {
-                ApiResult.Success(transcription.text)
-            } else {
-                ApiResult.Error("Empty transcription response from API")
-            }
-        } else {
-            ApiResult.Error("STT API error: ${response.code()}")
+            OAuth2Result.Cancelled -> AuthState.Unauthenticated
         }
     }
 
@@ -861,32 +577,31 @@ object AiPassSDK {
         }
 
         val cfg = config ?: return null
+        val storage = tokenStorage ?: return null
+        val mgr = manager ?: return null
 
         // Extract base URL from token endpoint
         val baseUrl = cfg.tokenEndpoint.substringBefore("/oauth2")
         val normalizedBaseUrl = if (baseUrl.endsWith("/")) baseUrl else "$baseUrl/"
 
-        // Create OkHttp client with mobile network optimizations
         val okHttpClient = OkHttpClient.Builder()
-            // Timeouts optimized for mobile networks
-            .connectTimeout(15, TimeUnit.SECONDS) // Faster failure on bad connections
-            .readTimeout(90, TimeUnit.SECONDS) // Longer for AI/audio processing on slow networks
+            .connectTimeout(15, TimeUnit.SECONDS)
+            .readTimeout(90, TimeUnit.SECONDS)
             .writeTimeout(90, TimeUnit.SECONDS)
-            .callTimeout(120, TimeUnit.SECONDS) // Overall request timeout
-
-            // Connection pool for reusing connections (critical for mobile)
+            .callTimeout(120, TimeUnit.SECONDS)
             .connectionPool(
                 okhttp3.ConnectionPool(
                     maxIdleConnections = 5,
-                    keepAliveDuration = 30, // Keep connections alive for 30 seconds
+                    keepAliveDuration = 30,
                     TimeUnit.SECONDS
                 )
             )
-
-            // Retry on connection failures (mobile networks are flaky)
             .retryOnConnectionFailure(true)
-
-            // Add interceptor for better mobile network handling
+            // Auto-inject `Authorization: Bearer <token>` on every request.
+            .addInterceptor(AuthorizationInterceptor(storage))
+            // Auto-refresh on 401 and retry once.
+            .authenticator(TokenAuthenticator(managerProvider = { manager }, tokenStorage = storage))
+            // Retry on transient 5xx / network errors.
             .addInterceptor { chain ->
                 var request = chain.request()
                 var response: okhttp3.Response? = null
@@ -897,17 +612,13 @@ object AiPassSDK {
                     try {
                         response = chain.proceed(request)
 
-                        // If response is successful or client error, don't retry
                         if (response.isSuccessful || response.code in 400..499) {
                             return@addInterceptor response
                         }
 
-                        // Close the failed response
                         response.close()
-
                         tryCount++
                         if (tryCount < maxRetries) {
-                            // Exponential backoff: 1s, 2s
                             Thread.sleep((1000 * tryCount).toLong())
                         }
                     } catch (e: Exception) {
@@ -915,17 +626,14 @@ object AiPassSDK {
                         if (tryCount >= maxRetries) {
                             throw e
                         }
-                        // Exponential backoff for exceptions too
                         Thread.sleep((1000 * tryCount).toLong())
                     }
                 }
 
-                // Return last response or throw
                 response ?: throw java.io.IOException("Failed after $maxRetries retries")
             }
             .build()
 
-        // Create Retrofit (shared for all API services)
         retrofit = Retrofit.Builder()
             .baseUrl(normalizedBaseUrl)
             .client(okHttpClient)
@@ -948,18 +656,35 @@ object AiPassSDK {
     // ========== LEGACY/ADVANCED API (for backward compatibility) ==========
 
     /**
-     * Initialize with custom configuration (advanced users only)
-     * Most users should use the simple initialize(context, clientId) method
+     * Initialize with custom configuration (advanced users only).
+     *
+     * Idempotent: if the SDK is already initialized with an equivalent config,
+     * this call is a no-op. If the config differs, the internal manager and
+     * Retrofit client are rebuilt.
      */
     fun initialize(context: Context, config: OAuth2Config) {
-        this.context = context.applicationContext
+        // Idempotency: skip work if already initialized with same config.
+        if (isInitialized() && this.config == config) {
+            return
+        }
+
+        val appContext = context.applicationContext
+        this.context = appContext
         this.config = config
-        persistConfig(context.applicationContext, config)
-        retrofit = null
-        apiService = null
-        audioApiService = null
-        this.manager = OAuth2Manager(context.applicationContext, config)
+        persistConfig(appContext, config)
+
+        // Rebuild everything so the new config's interceptors pick up the
+        // fresh token storage and manager.
+        this.tokenStorage = OAuth2TokenStorage(appContext)
+        this.manager = OAuth2Manager(appContext, config)
+        this.retrofit = null
+        this.apiService = null
+        this.audioApiService = null
+
         updateAuthState()
+
+        // Warm up the balance cache in the background. Only do this on a fresh
+        // init — we don't want to burn a request every time the app rebinds.
         CoroutineScope(Dispatchers.IO).launch {
             fetchBalanceInBackground()
         }
@@ -1035,27 +760,20 @@ object AiPassSDK {
      */
     @Deprecated("Use authState Flow instead", ReplaceWith("authState.collect { }"))
     fun setAuthorizationCallback(callback: (OAuth2Result) -> Unit) {
-        // Convert Flow to callback for backward compatibility
         CoroutineScope(Dispatchers.Main).launch {
             authState.collect { state ->
                 when (state) {
                     AuthState.Authenticated -> {
-                        // Get token and create success result
                         val token = getAccessToken() ?: return@collect
                         callback(
                             OAuth2Result.Success(
                                 accessToken = token,
-                                expiresIn = 3600, // Default value
+                                expiresIn = 3600,
                                 scope = DEFAULT_SCOPES.joinToString(" ")
                             )
                         )
                     }
-
-                    AuthState.Unauthenticated -> {
-                        // Don't call callback for unauthenticated state
-                        // as it might be the initial state
-                    }
-
+                    AuthState.Unauthenticated -> Unit
                     is AuthState.Error -> {
                         callback(
                             OAuth2Result.Error(
@@ -1083,24 +801,26 @@ object AiPassSDK {
     fun getConfig(): OAuth2Config? = config
 
     /**
-     * Get access token directly (advanced users only)
-     * Most users should just call generateCompletion() which handles tokens automatically
+     * Get access token directly (advanced users only).
+     *
+     * Most users don't need this — the SDK's Retrofit services inject the
+     * token automatically and refresh it on 401.
      */
     fun getAccessToken(): String? = manager?.getAccessToken()
 
     /**
-     * Create completion API service (advanced users only)
-     * Most users should just call generateCompletion() which handles everything
+     * Create completion API service (advanced users only).
+     *
+     * Returns the cached instance — safe to call repeatedly.
      */
     fun createCompletionApiService(): AiPassCompletionApiService? {
         return ensureApiService()
     }
 
     /**
-     * Create audio API service for Text-to-Speech and Speech-to-Text (advanced users only)
-     * Provides direct access to audio endpoints with OAuth2 token handling
+     * Create audio API service for TTS/STT (advanced users only).
      *
-     * @return AiPassAudioApiService instance or null if SDK not initialized
+     * Returns the cached instance — safe to call repeatedly.
      */
     fun createAudioApiService(): AiPassAudioApiService? {
         if (audioApiService != null) {
@@ -1113,8 +833,10 @@ object AiPassSDK {
     }
 
     /**
-     * Manually refresh access token (advanced users only)
-     * Token refresh is handled automatically in generateCompletion()
+     * Manually refresh access token (advanced users only).
+     *
+     * Not normally needed — the SDK's authenticator refreshes automatically
+     * on 401. Provided for diagnostics and edge cases.
      */
     suspend fun refreshAccessToken(): OAuth2Result {
         val mgr = manager ?: return OAuth2Result.Error(
@@ -1129,7 +851,7 @@ object AiPassSDK {
      */
     fun clearTokens() {
         context?.let {
-            val storage = one.aipass.data.OAuth2TokenStorage(it)
+            val storage = OAuth2TokenStorage(it)
             storage.clearTokens()
             _authState.value = AuthState.Unauthenticated
         }

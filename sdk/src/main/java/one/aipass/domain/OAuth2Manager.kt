@@ -5,6 +5,8 @@ import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 import one.aipass.data.OAuth2ApiService
@@ -41,6 +43,10 @@ class OAuth2Manager(
     private val apiService: OAuth2ApiService
     private var pendingPkceCodePair: PkceGenerator.PkceCodePair? = null
     private var pendingState: String? = null
+
+    // Serializes refresh attempts so concurrent callers share a single refresh
+    // and don't stampede the token endpoint.
+    private val refreshMutex = Mutex()
 
     // SharedPreferences for persisting OAuth2 flow state across process death
     private val flowStatePrefs by lazy {
@@ -411,9 +417,66 @@ class OAuth2Manager(
     }
 
     /**
-     * Refresh access token using refresh token
+     * Refresh access token using refresh token.
+     *
+     * Serialized by [refreshMutex] so concurrent callers share a single refresh
+     * attempt. If another call already refreshed the token while this caller was
+     * waiting on the lock, the already-valid token is returned without hitting
+     * the network again.
      */
     suspend fun refreshAccessToken(): OAuth2Result {
+        return refreshMutex.withLock {
+            // Fast-path: another coroutine refreshed the token while we were
+            // waiting. Return it without a second network call.
+            if (tokenStorage.hasValidAccessToken()) {
+                val token = tokenStorage.getAccessToken()
+                if (token != null) {
+                    return@withLock OAuth2Result.Success(
+                        accessToken = token,
+                        tokenType = "Bearer",
+                        expiresIn = tokenStorage.getTimeUntilExpiry(),
+                        scope = tokenStorage.getTokenScope() ?: "",
+                        refreshToken = tokenStorage.getRefreshToken()
+                    )
+                }
+            }
+
+            performRefresh()
+        }
+    }
+
+    /**
+     * Refresh the token if it's missing or expired. Unlike [refreshAccessToken]
+     * this returns the raw token string (or null on failure) and skips the
+     * network call when the current token is still valid.
+     *
+     * Intended for internal use by the OkHttp Authenticator.
+     */
+    suspend fun refreshAccessTokenIfNeeded(): String? {
+        // Cheap check before acquiring the lock.
+        if (tokenStorage.hasValidAccessToken()) {
+            return tokenStorage.getAccessToken()
+        }
+
+        return refreshMutex.withLock {
+            // Re-check under the lock in case another coroutine just refreshed.
+            if (tokenStorage.hasValidAccessToken()) {
+                return@withLock tokenStorage.getAccessToken()
+            }
+
+            when (performRefresh()) {
+                is OAuth2Result.Success -> tokenStorage.getAccessToken()
+                else -> null
+            }
+        }
+    }
+
+    /**
+     * Raw refresh operation. Callers must hold [refreshMutex] (or accept the
+     * risk of a refresh stampede). Public entry points ([refreshAccessToken],
+     * [refreshAccessTokenIfNeeded]) serialize access for you.
+     */
+    private suspend fun performRefresh(): OAuth2Result {
         return withContext(Dispatchers.IO) {
             try {
                 val refreshToken = tokenStorage.getRefreshToken()

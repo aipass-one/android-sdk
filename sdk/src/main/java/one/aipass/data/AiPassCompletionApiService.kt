@@ -4,11 +4,13 @@ import com.google.gson.annotations.SerializedName
 import retrofit2.Response
 import retrofit2.http.Body
 import retrofit2.http.GET
-import retrofit2.http.Header
 import retrofit2.http.POST
 
 /**
- * Retrofit interface for AI Pass completion endpoints
+ * Retrofit interface for AI Pass completion endpoints.
+ *
+ * The `Authorization: Bearer <token>` header is injected automatically by
+ * [AuthorizationInterceptor] — callers do not need to pass it.
  */
 interface AiPassCompletionApiService {
 
@@ -18,7 +20,6 @@ interface AiPassCompletionApiService {
      */
     @POST("oauth2/v1/chat/completions")
     suspend fun generateCompletion(
-        @Header("Authorization") authorization: String,
         @Body request: CompletionRequest
     ): Response<CompletionResponse>
 
@@ -27,9 +28,7 @@ interface AiPassCompletionApiService {
      * GET /api/v1/usage/me/summary
      */
     @GET("api/v1/usage/me/summary")
-    suspend fun getUserBalance(
-        @Header("Authorization") authorization: String
-    ): Response<UsageBalanceResponse>
+    suspend fun getUserBalance(): Response<UsageBalanceResponse>
 
     /**
      * Generate image via OAuth2 LiteLLM proxy
@@ -37,7 +36,6 @@ interface AiPassCompletionApiService {
      */
     @POST("oauth2/v1/images/generations")
     suspend fun generateImage(
-        @Header("Authorization") authorization: String,
         @Body request: ImageGenerationRequest
     ): Response<ImageGenerationResponse>
 }
