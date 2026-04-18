@@ -5,6 +5,19 @@ All notable changes to AI Pass SDK will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.1] - 2026-04-18
+
+### Changed
+
+- **Stronger transient-failure retry.** The internal retry interceptor now
+  makes up to **3 attempts** (was 2) on 5xx responses and `IOException`s, with
+  **exponential backoff** (500ms → 1s → 2s) instead of the previous 0-then-1s
+  pattern. First retry now actually waits, and flaky mobile networks /
+  momentary AI Pass outages recover transparently without the caller writing
+  its own retry loop.
+- 4xx responses (other than 401, still handled by `TokenAuthenticator`) short-
+  circuit retries and return immediately.
+
 ## [1.2.0] - 2026-04-18
 
 ### Added
@@ -113,6 +126,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Version History
 
+- **1.2.1** (2026-04-18): Stronger transient-failure retry (3 attempts, exponential backoff)
 - **1.2.0** (2026-04-18): Automatic token refresh via OkHttp authenticator, idempotent init, mutex-serialized refresh
 - **1.1.0** (2025-11-02): Audio API support (TTS & STT) + Java 21 target
 - **1.0.0** (2024-11-02): Initial public release with full OAuth2 + PKCE support

@@ -6,7 +6,7 @@ plugins {
 }
 
 group = "one.aipass"
-version = "1.2.0"
+version = "1.2.1"
 
 android {
     namespace = "one.aipass"

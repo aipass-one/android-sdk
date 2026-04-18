@@ -601,36 +601,38 @@ object AiPassSDK {
             .addInterceptor(AuthorizationInterceptor(storage))
             // Auto-refresh on 401 and retry once.
             .authenticator(TokenAuthenticator(managerProvider = { manager }, tokenStorage = storage))
-            // Retry on transient 5xx / network errors.
+            // Retry on transient 5xx / network errors with exponential backoff.
+            // Up to `maxAttempts` total attempts; 4xx responses (except 401 which
+            // is handled by the authenticator above) are returned immediately.
             .addInterceptor { chain ->
-                var request = chain.request()
+                val request = chain.request()
                 var response: okhttp3.Response? = null
-                var tryCount = 0
-                val maxRetries = 2
+                var lastException: Exception? = null
+                val maxAttempts = 3
+                val baseDelayMs = 500L
 
-                while (tryCount < maxRetries) {
+                for (attempt in 0 until maxAttempts) {
                     try {
+                        response?.close()
                         response = chain.proceed(request)
 
                         if (response.isSuccessful || response.code in 400..499) {
                             return@addInterceptor response
                         }
 
-                        response.close()
-                        tryCount++
-                        if (tryCount < maxRetries) {
-                            Thread.sleep((1000 * tryCount).toLong())
+                        // 5xx — retry with backoff if attempts remain
+                        if (attempt < maxAttempts - 1) {
+                            Thread.sleep(baseDelayMs shl attempt) // 500, 1000, 2000
                         }
                     } catch (e: Exception) {
-                        tryCount++
-                        if (tryCount >= maxRetries) {
-                            throw e
-                        }
-                        Thread.sleep((1000 * tryCount).toLong())
+                        lastException = e
+                        if (attempt >= maxAttempts - 1) throw e
+                        Thread.sleep(baseDelayMs shl attempt)
                     }
                 }
 
-                response ?: throw java.io.IOException("Failed after $maxRetries retries")
+                response ?: throw (lastException
+                    ?: java.io.IOException("Failed after $maxAttempts attempts"))
             }
             .build()
 
