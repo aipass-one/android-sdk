@@ -5,6 +5,19 @@ All notable changes to AI Pass SDK will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.1] - 2026-08-12
+
+### Changed
+
+- AI resource requests now use the canonical `/v1/**` endpoints for chat,
+  models, images, speech, and transcription. Authentication remains automatic;
+  the credential-specific `/oauth2/v1/**` prefix is no longer emitted.
+- The bundled Flutter client uses the same canonical resource paths.
+
+### Added
+
+- Regression tests that lock Retrofit AI methods to canonical `/v1/**` paths.
+
 ## [1.3.0] - 2026-08-12
 
 ### Added
@@ -140,6 +153,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Version History
 
+- **1.3.1** (2026-08-12): Canonical `/v1/**` AI resource endpoints
+- **1.3.0** (2026-08-12): Multimodal audio completions and model discovery
 - **1.2.1** (2026-04-18): Stronger transient-failure retry (3 attempts, exponential backoff)
 - **1.2.0** (2026-04-18): Automatic token refresh via OkHttp authenticator, idempotent init, mutex-serialized refresh
 - **1.1.0** (2025-11-02): Audio API support (TTS & STT) + Java 21 target

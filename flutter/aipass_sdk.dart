@@ -277,7 +277,7 @@ class AiPassSDK {
 
     final response = await _apiCall(
       'POST',
-      '/oauth2/v1/chat/completions',
+      '/v1/chat/completions',
       body: {
         'model': model,
         'messages': messages,
@@ -299,7 +299,7 @@ class AiPassSDK {
   }) async {
     final response = await _apiCall(
       'POST',
-      '/oauth2/v1/chat/completions',
+      '/v1/chat/completions',
       body: {
         'model': model,
         'messages': messages.map((m) => m.toJson()).toList(),
@@ -325,7 +325,7 @@ class AiPassSDK {
   }) async {
     final response = await _apiCall(
       'POST',
-      '/oauth2/v1/chat/completions',
+      '/v1/chat/completions',
       body: {
         'model': model,
         'messages': [
@@ -397,7 +397,7 @@ Extract receipt data in JSON format:
     if (token == null) throw AiPassException('Not authenticated');
 
     final response = await http.post(
-      Uri.parse('$_baseUrl/oauth2/v1/audio/speech'),
+      Uri.parse('$_baseUrl/v1/audio/speech'),
       headers: {
         'Authorization': 'Bearer $token',
         'Content-Type': 'application/json',
@@ -433,7 +433,7 @@ Extract receipt data in JSON format:
 
     final request = http.MultipartRequest(
       'POST',
-      Uri.parse('$_baseUrl/oauth2/v1/audio/transcriptions'),
+      Uri.parse('$_baseUrl/v1/audio/transcriptions'),
     );
 
     request.headers['Authorization'] = 'Bearer $token';
@@ -465,7 +465,7 @@ Extract receipt data in JSON format:
   }) async {
     final response = await _apiCall(
       'POST',
-      '/oauth2/v1/embeddings',
+      '/v1/embeddings',
       body: {
         'model': model,
         'input': text,
@@ -489,7 +489,7 @@ Extract receipt data in JSON format:
   }) async {
     final response = await _apiCall(
       'POST',
-      '/oauth2/v1/images/generations',
+      '/v1/images/generations',
       body: {
         'model': model,
         'prompt': prompt,
@@ -507,7 +507,7 @@ Extract receipt data in JSON format:
 
   /// List available models
   static Future<List<String>> listModels() async {
-    final response = await _apiCall('GET', '/oauth2/v1/models');
+    final response = await _apiCall('GET', '/v1/models');
     return List<String>.from(
       response['data'].map((m) => m['id']),
     );
@@ -515,7 +515,7 @@ Extract receipt data in JSON format:
 
   /// Get model info
   static Future<Map<String, dynamic>> getModelInfo(String modelId) async {
-    return await _apiCall('GET', '/oauth2/v1/models/$modelId');
+    return await _apiCall('GET', '/v1/models/$modelId');
   }
 
   // ==========================================================================

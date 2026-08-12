@@ -24,28 +24,28 @@ interface AiPassAudioApiService {
 
     /**
      * Generate speech audio from text (Text-to-Speech)
-     * POST /oauth2/v1/audio/speech
+     * POST /v1/audio/speech
      *
      * @param request Text-to-speech request
      * @return Audio file as ResponseBody (binary data)
      */
-    @POST("oauth2/v1/audio/speech")
+    @POST("v1/audio/speech")
     suspend fun generateSpeech(
         @Body request: AudioSpeechRequest
     ): Response<ResponseBody>
 
     /**
      * Generate speech audio from text (Text-to-Speech) - Alternative endpoint
-     * POST /oauth2/v1/audio/speech
+     * POST /v1/audio/speech
      */
-    @POST("oauth2/v1/audio/speech")
+    @POST("v1/audio/speech")
     suspend fun generateSpeechV1(
         @Body request: AudioSpeechRequest
     ): Response<ResponseBody>
 
     /**
      * Transcribe audio to text (Speech-to-Text)
-     * POST /oauth2/v1/audio/transcriptions
+     * POST /v1/audio/transcriptions
      *
      * @param file Audio file as multipart
      * @param model Model ID (e.g., "whisper-1")
@@ -56,7 +56,7 @@ interface AiPassAudioApiService {
      * @return Transcription response
      */
     @Multipart
-    @POST("oauth2/v1/audio/transcriptions")
+    @POST("v1/audio/transcriptions")
     suspend fun transcribeAudio(
         @Part file: MultipartBody.Part,
         @Part("model") model: RequestBody,
@@ -68,10 +68,10 @@ interface AiPassAudioApiService {
 
     /**
      * Transcribe audio to text (Speech-to-Text) - Alternative endpoint
-     * POST /oauth2/v1/audio/transcriptions
+     * POST /v1/audio/transcriptions
      */
     @Multipart
-    @POST("oauth2/v1/audio/transcriptions")
+    @POST("v1/audio/transcriptions")
     suspend fun transcribeAudioV1(
         @Part file: MultipartBody.Part,
         @Part("model") model: RequestBody,

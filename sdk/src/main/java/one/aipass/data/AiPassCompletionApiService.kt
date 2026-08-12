@@ -15,10 +15,10 @@ import retrofit2.http.POST
 interface AiPassCompletionApiService {
 
     /**
-     * Generate AI completion via OAuth2 LiteLLM proxy
-     * POST /oauth2/v1/chat/completions
+     * Generate an AI completion through the canonical resource API.
+     * POST /v1/chat/completions
      */
-    @POST("oauth2/v1/chat/completions")
+    @POST("v1/chat/completions")
     suspend fun generateCompletion(
         @Body request: CompletionRequest
     ): Response<CompletionResponse>
@@ -28,7 +28,7 @@ interface AiPassCompletionApiService {
      * Model availability is dynamic, so applications should not rely only on
      * model IDs compiled into the APK.
      */
-    @GET("oauth2/v1/models")
+    @GET("v1/models")
     suspend fun listModels(): Response<ModelListResponse>
 
     /**
@@ -39,10 +39,10 @@ interface AiPassCompletionApiService {
     suspend fun getUserBalance(): Response<UsageBalanceResponse>
 
     /**
-     * Generate image via OAuth2 LiteLLM proxy
-     * POST /oauth2/v1/images/generations
+     * Generate an image through the canonical resource API.
+     * POST /v1/images/generations
      */
-    @POST("oauth2/v1/images/generations")
+    @POST("v1/images/generations")
     suspend fun generateImage(
         @Body request: ImageGenerationRequest
     ): Response<ImageGenerationResponse>
