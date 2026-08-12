@@ -5,6 +5,20 @@ All notable changes to AI Pass SDK will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.0] - 2026-08-12
+
+### Added
+
+- `AiPassSDK.generateAudioCompletion(...)` for sending inline audio and instructions
+  to an audio-capable chat model in one authenticated request.
+- `AiPassSDK.listModels()` for runtime model discovery.
+- Type-safe OpenAI-compatible `input_audio` and `response_format` request models.
+
+### Changed
+
+- OAuth API requests now include `X-AIPass-OAuth-Client-Id` alongside the bearer token.
+- Completion requests serialize only the standard `max_tokens` field.
+
 ## [1.2.1] - 2026-04-18
 
 ### Changed

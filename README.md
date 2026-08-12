@@ -17,6 +17,8 @@ your own OAuth2 server.
 - ✅ CSRF protection (state parameter)
 - ✅ Type-safe result handling (sealed classes)
 - ✅ Coroutine-based async operations
+- ✅ One-call multimodal audio understanding
+- ✅ Runtime model discovery
 - ✅ RFC 6749 & 7636 compliant
 - ✅ **No external dependencies on specific services**
 - ✅ Lightweight (minimal dependencies)
@@ -41,7 +43,7 @@ dependencyResolutionManagement {
 ```kotlin
 // app/build.gradle.kts
 dependencies {
-    implementation("com.github.aipass-one:android-sdk:v1.1.0")
+    implementation("com.github.aipass-one:android-sdk:v1.3.0")
 }
 ```
 
@@ -251,6 +253,29 @@ AiPassSDK.authorize(activity)
 The AI Key backend automatically accepts OAuth2 tokens on all `/v1/**` endpoints!
 
 ## API Reference
+
+### Multimodal audio understanding
+
+Use an audio-capable model from `listModels()` to transcribe and understand a
+recording in a single network round trip:
+
+```kotlin
+val models = AiPassSDK.listModels()
+
+val result = AiPassSDK.generateAudioCompletion(
+    model = "gemini-3.5-flash-lite",
+    prompt = """
+        Transcribe the recording verbatim and return JSON with:
+        transcript, accepted, score, and feedback.
+    """.trimIndent(),
+    audioFile = recording,
+    jsonResponse = true
+)
+```
+
+The SDK infers common formats including M4A/MP4, MP3, WAV, OGG, WebM, AAC,
+and FLAC. Inline audio is limited to 20 MiB; use a provider file-upload API for
+larger media.
 
 ### AiPassSDK
 

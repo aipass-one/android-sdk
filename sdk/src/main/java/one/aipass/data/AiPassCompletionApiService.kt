@@ -24,6 +24,14 @@ interface AiPassCompletionApiService {
     ): Response<CompletionResponse>
 
     /**
+     * Discover the models currently available to this OAuth client and user.
+     * Model availability is dynamic, so applications should not rely only on
+     * model IDs compiled into the APK.
+     */
+    @GET("oauth2/v1/models")
+    suspend fun listModels(): Response<ModelListResponse>
+
+    /**
      * Get user's usage summary (balance, cost, remaining budget)
      * GET /api/v1/usage/me/summary
      */
@@ -47,11 +55,17 @@ data class CompletionRequest(
     val model: String,
     val messages: List<Message>,
     val temperature: Double? = null,
-    val maxTokens: Int? = null,
     @SerializedName("max_tokens")
-    val max_tokens: Int? = maxTokens, // For JSON serialization
+    val maxTokens: Int? = null,
     val stream: Boolean = false,
-    val tools: List<ToolDefinition>? = null
+    val tools: List<ToolDefinition>? = null,
+    @SerializedName("response_format")
+    val responseFormat: ResponseFormat? = null
+)
+
+/** OpenAI-compatible response format request. */
+data class ResponseFormat(
+    val type: String
 )
 
 /**
@@ -70,7 +84,7 @@ data class ToolFunction(
 
 /**
  * Message in completion request
- * Content can be either String (text-only) or List<ContentPart> (multimodal with images)
+ * Content can be either String (text-only) or List<ContentPart> (multimodal).
  */
 data class Message(
     val role: String, // "system", "user", "assistant"
@@ -78,20 +92,61 @@ data class Message(
 )
 
 /**
- * Content part for multimodal messages (text + images)
+ * Content part for multimodal messages (text, images, or inline audio).
  */
 data class ContentPart(
-    val type: String, // "text" or "image_url"
+    val type: String, // "text", "image_url", or "input_audio"
     val text: String? = null, // for type="text"
     @SerializedName("image_url")
-    val imageUrl: ImageUrl? = null // for type="image_url"
-)
+    val imageUrl: ImageUrl? = null, // for type="image_url"
+    @SerializedName("input_audio")
+    val inputAudio: InputAudio? = null // for type="input_audio"
+) {
+    companion object {
+        @JvmStatic
+        fun text(text: String): ContentPart = ContentPart(type = "text", text = text)
+
+        @JvmStatic
+        fun image(url: String): ContentPart = ContentPart(
+            type = "image_url",
+            imageUrl = ImageUrl(url)
+        )
+
+        @JvmStatic
+        fun audio(data: String, format: String): ContentPart = ContentPart(
+            type = "input_audio",
+            inputAudio = InputAudio(data = data, format = format)
+        )
+    }
+}
 
 /**
  * Image URL wrapper for vision API
  */
 data class ImageUrl(
     val url: String // "data:image/jpeg;base64,..." or http URL
+)
+
+/** Base64-encoded inline audio for an OpenAI-compatible multimodal request. */
+data class InputAudio(
+    val data: String,
+    val format: String
+)
+
+/** OpenAI-compatible model catalog response. */
+data class ModelListResponse(
+    @SerializedName("object")
+    val objectType: String? = null,
+    val data: List<AiPassModel> = emptyList()
+)
+
+/** A model made available by AI Pass to the current OAuth client and user. */
+data class AiPassModel(
+    val id: String,
+    @SerializedName("object")
+    val objectType: String? = null,
+    @SerializedName("owned_by")
+    val ownedBy: String? = null
 )
 
 /**

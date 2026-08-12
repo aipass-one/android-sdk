@@ -3,6 +3,7 @@ package one.aipass
 import android.app.Activity
 import android.content.Context
 import android.content.Intent
+import android.util.Base64
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -17,12 +18,15 @@ import okhttp3.RequestBody.Companion.asRequestBody
 import okhttp3.RequestBody.Companion.toRequestBody
 import one.aipass.data.AiPassAudioApiService
 import one.aipass.data.AiPassCompletionApiService
+import one.aipass.data.AiPassModel
 import one.aipass.data.AudioSpeechRequest
 import one.aipass.data.AuthorizationInterceptor
 import one.aipass.data.CompletionRequest
+import one.aipass.data.ContentPart
 import one.aipass.data.ImageGenerationRequest
 import one.aipass.data.Message
 import one.aipass.data.OAuth2TokenStorage
+import one.aipass.data.ResponseFormat
 import one.aipass.data.TokenAuthenticator
 import one.aipass.data.UsageBalanceData
 import one.aipass.domain.OAuth2Config
@@ -85,6 +89,7 @@ object AiPassSDK {
     private const val KEY_REDIRECT_URI = "redirect_uri"
     private const val KEY_SCOPES = "scopes"
     private val DEFAULT_SCOPES = listOf("api:access", "profile:read")
+    private const val MAX_INLINE_AUDIO_BYTES = 20L * 1024L * 1024L
 
     // Internal OAuth manager
     private var manager: OAuth2Manager? = null
@@ -284,6 +289,131 @@ object AiPassSDK {
             }
         } catch (e: Exception) {
             ApiResult.Error("API call failed: ${e.message}", e)
+        }
+    }
+
+    /**
+     * Send audio and instructions to a multimodal model in one request.
+     *
+     * This is intended for audio-understanding flows where a separate speech
+     * transcription round trip would add avoidable latency. The response is
+     * text; pass [jsonResponse] when the prompt asks for a JSON object.
+     *
+     * @param model Audio-capable model returned by [listModels]
+     * @param prompt Instructions for understanding the audio
+     * @param audioFile Local audio file, up to 20 MiB
+     * @param audioFormat OpenAI-compatible format such as mp3, mp4, wav, or ogg;
+     * inferred from the file extension by default
+     * @param temperature Sampling temperature
+     * @param maxTokens Maximum response tokens
+     * @param jsonResponse Request a JSON object response
+     */
+    @JvmOverloads
+    suspend fun generateAudioCompletion(
+        model: String,
+        prompt: String,
+        audioFile: File,
+        audioFormat: String? = null,
+        temperature: Double = 0.0,
+        maxTokens: Int = 1000,
+        jsonResponse: Boolean = false
+    ): ApiResult<String> = withContext(Dispatchers.IO) {
+        try {
+            if (!audioFile.exists() || !audioFile.isFile) {
+                return@withContext ApiResult.Error(
+                    "Audio file does not exist: ${audioFile.path}"
+                )
+            }
+            if (audioFile.length() == 0L) {
+                return@withContext ApiResult.Error("Audio file is empty: ${audioFile.path}")
+            }
+            if (audioFile.length() > MAX_INLINE_AUDIO_BYTES) {
+                return@withContext ApiResult.Error(
+                    "Audio file exceeds the 20 MiB inline limit"
+                )
+            }
+
+            val service = ensureApiService()
+                ?: return@withContext ApiResult.Error("SDK not initialized")
+            if (!isAuthenticated()) {
+                return@withContext ApiResult.Unauthenticated
+            }
+
+            val format = normalizeAudioFormat(audioFormat ?: audioFile.extension)
+                ?: return@withContext ApiResult.Error(
+                    "Unsupported audio format '${audioFormat ?: audioFile.extension}'. " +
+                        "Pass one of: mp3, mp4, m4a, wav, ogg, webm, aac, flac"
+                )
+            val encodedAudio = Base64.encodeToString(audioFile.readBytes(), Base64.NO_WRAP)
+            val request = CompletionRequest(
+                model = model,
+                messages = listOf(
+                    Message(
+                        role = "user",
+                        content = listOf(
+                            ContentPart.text(prompt),
+                            ContentPart.audio(encodedAudio, format)
+                        )
+                    )
+                ),
+                temperature = temperature,
+                maxTokens = maxTokens,
+                responseFormat = if (jsonResponse) ResponseFormat("json_object") else null
+            )
+
+            val response = service.generateCompletion(request)
+            when {
+                response.isSuccessful -> {
+                    val content = response.body()
+                        ?.choices
+                        ?.firstOrNull()
+                        ?.message
+                        ?.content as? String
+                    if (content.isNullOrBlank()) {
+                        ApiResult.Error("Empty response from API")
+                    } else {
+                        ApiResult.Success(content)
+                    }
+                }
+                response.code() == 401 -> {
+                    _authState.value = AuthState.Unauthenticated
+                    ApiResult.Unauthenticated
+                }
+                else -> {
+                    val errorBody = response.errorBody()?.string() ?: response.message()
+                    ApiResult.Error(
+                        "Audio completion API error: ${response.code()} - $errorBody"
+                    )
+                }
+            }
+        } catch (e: Exception) {
+            ApiResult.Error("Audio completion API call failed: ${e.message}", e)
+        }
+    }
+
+    /** Discover the model IDs currently available to this user and OAuth client. */
+    suspend fun listModels(): ApiResult<List<AiPassModel>> = withContext(Dispatchers.IO) {
+        try {
+            val service = ensureApiService()
+                ?: return@withContext ApiResult.Error("SDK not initialized")
+            if (!isAuthenticated()) {
+                return@withContext ApiResult.Unauthenticated
+            }
+
+            val response = service.listModels()
+            when {
+                response.isSuccessful -> ApiResult.Success(response.body()?.data.orEmpty())
+                response.code() == 401 -> {
+                    _authState.value = AuthState.Unauthenticated
+                    ApiResult.Unauthenticated
+                }
+                else -> {
+                    val errorBody = response.errorBody()?.string() ?: response.message()
+                    ApiResult.Error("Models API error: ${response.code()} - $errorBody")
+                }
+            }
+        } catch (e: Exception) {
+            ApiResult.Error("Models API call failed: ${e.message}", e)
         }
     }
 
@@ -598,7 +728,7 @@ object AiPassSDK {
             )
             .retryOnConnectionFailure(true)
             // Auto-inject `Authorization: Bearer <token>` on every request.
-            .addInterceptor(AuthorizationInterceptor(storage))
+            .addInterceptor(AuthorizationInterceptor(storage, cfg.clientId))
             // Auto-refresh on 401 and retry once.
             .authenticator(TokenAuthenticator(managerProvider = { manager }, tokenStorage = storage))
             // Retry on transient 5xx / network errors with exponential backoff.
@@ -653,6 +783,19 @@ object AiPassSDK {
         val retrofit = ensureRetrofit() ?: return null
         apiService = retrofit.create(AiPassCompletionApiService::class.java)
         return apiService
+    }
+
+    private fun normalizeAudioFormat(value: String): String? {
+        return when (value.trim().removePrefix(".").lowercase()) {
+            "mp3", "mpeg", "mpga" -> "mp3"
+            "mp4", "m4a" -> "mp4"
+            "wav", "wave" -> "wav"
+            "ogg", "oga" -> "ogg"
+            "webm" -> "webm"
+            "aac" -> "aac"
+            "flac" -> "flac"
+            else -> null
+        }
     }
 
     // ========== LEGACY/ADVANCED API (for backward compatibility) ==========

@@ -15,27 +15,31 @@ import okhttp3.Response
  * left untouched. Paired with [TokenAuthenticator], which handles 401 refresh.
  */
 internal class AuthorizationInterceptor(
-    private val tokenStorage: OAuth2TokenStorage
+    private val tokenStorage: OAuth2TokenStorage,
+    private val clientId: String
 ) : Interceptor {
 
     override fun intercept(chain: Interceptor.Chain): Response {
         val original = chain.request()
 
-        // Skip if caller already set an Authorization header (e.g. legacy code
-        // passing it manually, or the OAuth2 token endpoint itself).
-        if (original.header("Authorization") != null) {
-            return chain.proceed(original)
+        val token = tokenStorage.getAccessToken()
+        val requestBuilder = original.newBuilder()
+
+        if (original.header("Authorization") == null && !token.isNullOrEmpty()) {
+            requestBuilder
+                .header("Authorization", "Bearer $token")
         }
 
-        val token = tokenStorage.getAccessToken()
-        val request = if (token.isNullOrEmpty()) {
-            original
-        } else {
-            original.newBuilder()
-                .header("Authorization", "Bearer $token")
-                .build()
+        if (original.header(CLIENT_ID_HEADER) == null) {
+            requestBuilder.header(CLIENT_ID_HEADER, clientId)
         }
+
+        val request = requestBuilder.build()
 
         return chain.proceed(request)
+    }
+
+    private companion object {
+        const val CLIENT_ID_HEADER = "X-AIPass-OAuth-Client-Id"
     }
 }
